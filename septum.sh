@@ -39,196 +39,169 @@ if [ "$MODE" == "2" ]; then
     fi
     OUTPUT_PREFIX="${OUTPUT_XML%.xml}"
 
-    # Read the source IP used in the original scan from the paused.conf
     SOURCE_IP=$(grep "^source-ip" "$RESUME_FILE" | cut -d= -f2 | tr -d " " | tr -d "\r")
+    # Capture the original IP_LIST from the masscan command line if possible, or ask
+    IP_LIST=$(grep "^# masscan" "$RESUME_FILE" | grep -o "\-iL [^ ]*" | cut -d" " -f2)
+    if [ -z "$IP_LIST" ]; then
+        read -p "Enter the path to the target IP list file used in the original scan: " IP_LIST
+    fi
 
     echo "Resuming masscan from $RESUME_FILE..."
-    echo "Output will be appended/saved to $OUTPUT_XML"
-
     sudo masscan --resume "$RESUME_FILE"
 
     STAGE2=1
 elif [ "$MODE" == "1" ]; then
     echo ""
-    read -p "Enter a name for this test (e.g., UserVLAN_to_CDE): " TEST_NAME
-    if [ -z "$TEST_NAME" ]; then
-        echo "Test name cannot be empty."
-        exit 1
-    fi
+    read -p "Enter a name for this test: " TEST_NAME
+    if [ -z "$TEST_NAME" ]; then echo "Test name required."; exit 1; fi
 
     echo ""
-    read -p "Enter the path to the target IP list file (e.g., ips.txt): " IP_LIST
-    if [ ! -f "$IP_LIST" ]; then
-        echo "Error: File $IP_LIST not found!"
-        exit 1
-    fi
+    read -p "Enter the path to the target IP list file (ips.txt): " IP_LIST
+    if [ ! -f "$IP_LIST" ]; then echo "Error: File $IP_LIST not found!"; exit 1; fi
 
     echo ""
     echo "Available Network Interfaces:"
     ip -br link show | awk "{print \$1, \$2}"
     echo ""
 
-    read -p "Enter the interface to test from (e.g., eth0): " INTERFACE
-    if ! ip link show "$INTERFACE" > /dev/null 2>&1; then
-        echo "Error: Interface $INTERFACE does not exist."
-        exit 1
-    fi
+    read -p "Enter the interface to test from: " INTERFACE
+    if ! ip link show "$INTERFACE" > /dev/null 2>&1; then echo "Interface error."; exit 1; fi
 
     SOURCE_IP=$(ip -4 addr show "$INTERFACE" | awk "/inet/ {print \$2}" | cut -d/ -f1 | head -n 1)
 
     echo ""
     echo "Select Port Scan Scope:"
-    echo "1) Full 65,535 Ports (Recommended for PCI Segmentation)"
+    echo "1) Full 65,535 Ports"
     echo "2) Top 1,000 Ports"
     read -p "Choice [1/2]: " SCOPE_CHOICE
-
     case $SCOPE_CHOICE in
-        2)
-            PORT_ARGS="1-1024,3389,8000,8080,8443,9000"
-            ;;
-        *)
-            PORT_ARGS="1-65535"
-            ;;
+        2) PORT_ARGS="1-1024,3389,8000,8080,8443,9000" ;;
+        *) PORT_ARGS="1-65535" ;;
     esac
 
     echo ""
-    echo "Set max packet rate (pps). For enterprise firewalls, 2000-5000 is safe."
-    read -p "Rate [Default: 2000]: " RATE
+    read -p "Set max packet rate (pps) [Default: 2000]: " RATE
     RATE=${RATE:-2000}
 
     OUTPUT_PREFIX="${TEST_NAME}_${INTERFACE}"
     OUTPUT_XML="${OUTPUT_PREFIX}.xml"
 
     echo ""
-    echo "======================================"
-    echo "       INTERACTIVE CONTROLS           "
-    echo "--------------------------------------"
-    echo "[Ctrl+C] - Pause (Creates paused.conf)"
-    echo "======================================"
-    echo "Starting Stage 1: Masscan (Asynchronous Discovery)"
-    echo "Command: masscan -iL $IP_LIST -p$PORT_ARGS -e $INTERFACE --source-ip $SOURCE_IP --rate $RATE -oX $OUTPUT_XML"
-
+    echo "Starting Stage 1: Masscan..."
     sudo masscan -iL "$IP_LIST" -p"$PORT_ARGS" -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML"
 
     STAGE2=1
 else
-    echo "Invalid choice."
-    exit 1
+    echo "Invalid choice."; exit 1
 fi
 
 if [ "$STAGE2" == "1" ]; then
     echo "--------------------------------------"
-    echo "Stage 1 Complete. Analyzing Masscan results..."
-
-    cat << "EOF_PY" > /tmp/parse_masscan.py
-import sys
-import xml.etree.ElementTree as ET
-
-if len(sys.argv) < 3:
-    sys.exit(1)
-
-xml_file = sys.argv[1]
-out_file = sys.argv[2]
-
-try:
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
-except Exception as e:
-    # If XML is empty or malformed, it likely means no ports were open
-    sys.exit(0)
-
-targets = {}
-for host in root.findall("host"):
-    addr_elem = host.find("address")
-    if addr_elem is None: continue
-    ip = addr_elem.get("addr")
-
-    ports_elem = host.find("ports")
-    if ports_elem is None: continue
-
-    for port in ports_elem.findall("port"):
-        state_elem = port.find("state")
-        if state_elem is not None and state_elem.get("state") == "open":
-            portid = port.get("portid")
-            if ip not in targets:
-                targets[ip] = []
-            targets[ip].append(portid)
-
-with open(out_file, "w") as f:
-    for ip, ports in targets.items():
-        f.write(ip + " " + ",".join(ports) + "\n")
-EOF_PY
-
-    NMAP_TARGETS="${OUTPUT_PREFIX}_nmap_targets.txt"
-    python3 /tmp/parse_masscan.py "$OUTPUT_XML" "$NMAP_TARGETS"
-    rm -f /tmp/parse_masscan.py
+    echo "Stage 1 Complete. Generating PCI Report..."
 
     FINAL_CSV="${OUTPUT_PREFIX}_PCI_Report.csv"
-    echo "Source_IP,Destination_IP,Port,Protocol,State,Reason,Service" > "$FINAL_CSV"
+    echo "Source_IP,Destination_Target,Segmentation_Status,Port,Protocol,State,Reason,Service" > "$FINAL_CSV"
 
-    if [ ! -f "$NMAP_TARGETS" ] || [ ! -s "$NMAP_TARGETS" ]; then
-        echo "======================================"
-        echo "SUCCESS: No open ports found!"
-        echo "The segmentation is intact. Proof saved in $OUTPUT_XML"
-        echo "======================================"
-        # Write the clean pass to the CSV report
-        echo "$SOURCE_IP,Segmentation Passed,N/A,N/A,Filtered/Closed,No Response,N/A" >> "$FINAL_CSV"
-        echo "Clean report saved to: $FINAL_CSV"
-        exit 0
-    fi
-
-    echo "WARNING: Found open ports! Moving to Stage 2: Nmap Validation..."
-    echo "Running surgical Nmap scans on the specific open ports to grab PCI evidence..."
-
-    cat << "EOF_NMAP_PY" > /tmp/parse_nmap.py
+    # Stage 2 Orchestrator (Python)
+    cat << "EOF_PY" > /tmp/septum_orchestrator.py
 import sys
 import xml.etree.ElementTree as ET
+import ipaddress
+import subprocess
+import os
 
-xml_file = sys.argv[1]
-csv_file = sys.argv[2]
-target_ip = sys.argv[3]
-source_ip = sys.argv[4]
+masscan_xml = sys.argv[1]
+ip_list_file = sys.argv[2]
+source_ip = sys.argv[3]
+final_csv = sys.argv[4]
 
-try:
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
-except:
-    sys.exit(0)
+# 1. Parse Masscan for failures
+failed_hosts = {} # ip -> [ports]
+if os.path.exists(masscan_xml) and os.path.getsize(masscan_xml) > 0:
+    try:
+        tree = ET.parse(masscan_xml)
+        root = tree.getroot()
+        for host in root.findall("host"):
+            addr = host.find("address").get("addr")
+            ports = []
+            for p in host.find("ports").findall("port"):
+                if p.find("state").get("state") == "open":
+                    ports.append(p.get("portid"))
+            if ports:
+                failed_hosts[addr] = ports
+    except:
+        pass
 
-with open(csv_file, "a") as f:
-    for host in root.findall("host"):
-        ports = host.find("ports")
-        if ports is None: continue
-        for port in ports.findall("port"):
-            portid = port.get("portid")
-            proto = port.get("protocol")
-            state_elem = port.find("state")
-            state = state_elem.get("state") if state_elem is not None else ""
-            reason = state_elem.get("reason") if state_elem is not None else ""
-            service_elem = port.find("service")
-            service = service_elem.get("name") if service_elem is not None else ""
-            f.write(f"{source_ip},{target_ip},{portid},{proto},{state},{reason},{service}\n")
-EOF_NMAP_PY
+# 2. Iterate through Target List
+with open(ip_list_file, "r") as f:
+    targets = [line.strip() for line in f if line.strip()]
 
-    TOTAL_HOSTS=$(wc -l < "$NMAP_TARGETS")
-    CURRENT=0
+for target in targets:
+    try:
+        # Check if target is a range/network
+        is_failed = False
+        failures_in_range = []
 
-    while read -r line; do
-        CURRENT=$((CURRENT+1))
-        IP=$(echo "$line" | awk "{print \$1}")
-        PORT_LIST=$(echo "$line" | awk "{print \$2}")
+        if "/" in target:
+            net = ipaddress.ip_network(target, strict=False)
+            for f_ip in failed_hosts:
+                if ipaddress.ip_address(f_ip) in net:
+                    is_failed = True
+                    failures_in_range.append(f_ip)
+        else:
+            if target in failed_hosts:
+                is_failed = True
+                failures_in_range.append(target)
 
-        echo "[$CURRENT/$TOTAL_HOSTS] Validating $IP on ports $PORT_LIST..."
-        sudo nmap -Pn -sS -sV -p "$PORT_LIST" "$IP" -oX "/tmp/nmap_$IP.xml" > /dev/null 2>&1
+        if not is_failed:
+            # Segmentation Passed
+            with open(final_csv, "a") as f_out:
+                f_out.write(f"{source_ip},{target},Segmentation Passed,N/A,N/A,Filtered/Closed,No Response,N/A\n")
+        else:
+            # Segmentation Failed - Run Nmap on those IPs
+            for ip in failures_in_range:
+                port_list = ",".join(failed_hosts[ip])
+                print(f"[*] Validating failure on {ip}...")
 
-        python3 /tmp/parse_nmap.py "/tmp/nmap_$IP.xml" "$FINAL_CSV" "$IP" "$SOURCE_IP"
-        rm -f "/tmp/nmap_$IP.xml"
-    done < "$NMAP_TARGETS"
+                nmap_xml = f"/tmp/nmap_{ip}.xml"
+                subprocess.run(["sudo", "nmap", "-Pn", "-sS", "-sV", "-p", port_list, ip, "-oX", nmap_xml], capture_output=True)
 
-    rm -f /tmp/parse_nmap.py
+                if os.path.exists(nmap_xml):
+                    try:
+                        n_tree = ET.parse(nmap_xml)
+                        n_root = n_tree.getroot()
+                        for h in n_root.findall("host"):
+                            p_elem = h.find("ports")
+                            if p_elem is None: continue
+                            for p in p_elem.findall("port"):
+                                pid = p.get("portid")
+                                proto = p.get("protocol")
+                                state_elem = p.find("state")
+                                st = state_elem.get("state")
+                                reas = state_elem.get("reason")
+                                s_elem = p.find("service")
+                                sv = s_elem.get("name") if s_elem is not None else "unknown"
+                                with open(final_csv, "a") as f_out:
+                                    f_out.write(f"{source_ip},{ip},Segmentation Failed,{pid},{proto},{st},{reas},{sv}\n")
+                    except:
+                        pass
+                    if os.path.exists(nmap_xml): os.remove(nmap_xml)
+
+            # Also record the original range as "Failed" for context
+            if "/" in target:
+                with open(final_csv, "a") as f_out:
+                    f_out.write(f"{source_ip},{target},Segmentation Failed (Partial),N/A,N/A,Multiple,See IP entries,N/A\n")
+
+    except Exception as e:
+        print(f"Error processing {target}: {e}")
+
+EOF_PY
+
+    python3 /tmp/septum_orchestrator.py "$OUTPUT_XML" "$IP_LIST" "$SOURCE_IP" "$FINAL_CSV"
+    rm -f /tmp/septum_orchestrator.py
 
     echo "======================================"
-    echo "Stage 2 Complete."
-    echo "Detailed PCI evidence generated: $FINAL_CSV"
+    echo "Septum Scan & Report Complete."
+    echo "Final Report: $FINAL_CSV"
     echo "======================================"
 fi
