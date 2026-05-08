@@ -3,46 +3,67 @@
 Septum is a specialized, asynchronous network scanning wrapper designed to prove PCI DSS network segmentation (Requirement 11.4) across massive enterprise subnets (e.g., 60,000+ IPs).
 
 ## The Methodology
-Septum uses a highly optimized Two-Stage approach to safely scan entire `/16` networks without causing Denial of Service (DoS) conditions on stateful firewalls:
+Septum uses a highly optimized Two-Stage approach to safely scan entire networks without causing Denial of Service (DoS) conditions on stateful firewalls:
 
-1. **Stage 1 (Masscan):** Conducts a high-speed, asynchronous sweep across the target IP list to prove a negative (that ports are closed/filtered). It runs at a throttled, configurable rate (default 2000 pps).
-2. **Stage 2 (Nmap):** If Stage 1 detects any segmentation failures (open ports), Septum dynamically extracts those specific IP/Port combinations and runs a surgical Nmap scan against them. This grabs the necessary Service Banners and `--reason` codes required for PCI evidence.
+1. **Stage 1 (Masscan):** Conducts a high-speed, asynchronous sweep across the target IP list to prove a negative (that ports are closed/filtered).
+2. **Stage 2 (Nmap):** If failures are detected, Septum automatically runs surgical Nmap scans against those specific IP/Port combinations to grab Service Banners and `--reason` codes for PCI evidence.
 
-## Installation
-Septum requires `masscan` and `nmap`.
+---
 
-```bash
-sudo apt-get update && sudo apt-get install -y masscan nmap
-chmod +x septum.sh
+## Walkthrough: Running a Scan
+
+### 1. Prepare your Target List
+Create a file named `ips.txt` containing the networks or IPs you want to test.
+```text
+192.168.1.0/24
+10.50.10.5
+172.16.0.0/16
 ```
 
-## Usage
-
-### 1. Start a New Scan
+### 2. Execute Septum
 ```bash
 ./septum.sh
 ```
-The script will interactively ask for:
-- A Test Name (e.g., `UserVLAN_to_CDE`)
-- A target IP list file (e.g., `ips.txt`)
-- The source network interface (e.g., `eth0`)
-- The Port Scope (Full 65k or Top 1,000)
-- The Packet Rate
 
-### 2. Pause and Resume
-If a scan is taking too long or you need to pause testing during business hours:
-- Press `Ctrl+C` while Stage 1 is running.
-- Masscan will safely halt and generate a `paused.conf` file in the current directory.
-- To resume exactly where you left off, run `./septum.sh` and select Option 2.
+### 3. Interactive Inputs
+- **Test Name:** `VLAN10_to_CDE` (Used for filenames)
+- **Target List:** `ips.txt`
+- **Interface:** `eth1.10` (The restricted VLAN interface)
+- **Port Scope:** `1` (Full 65,535 ports)
+- **Packet Rate:** `2000` (Safe for enterprise firewalls)
 
-## Reporting Output
-Septum automatically generates two artifacts in the current working directory:
+### 4. Interactive Controls
+- **[Ctrl+C]**: Pause the scan. Masscan saves progress to `paused.conf`.
+- **Resume**: Run `./septum.sh` again and select **Option 2** to pick up exactly where you left off.
 
-1. **`[TestName]_[Interface].xml`**: The raw Masscan XML data for technical audit trailing.
-2. **`[TestName]_[Interface]_PCI_Report.csv`**: The clean, final evidence file for QSAs.
+---
 
-### CSV Report Format
-The final report includes the Source IP of the interface you scanned from.
-- If the firewall successfully dropped all traffic, the report will explicitly state:
-  `Source_IP,Segmentation Passed,N/A,N/A,Filtered/Closed,No Response,N/A`
-- If the firewall failed, it will list every specific Destination IP, Port, Protocol, State, Reason, and Service discovered.
+## Expected Output
+
+### Terminal Workflow
+```text
+Stage 1 Complete. Generating PCI Report...
+[*] Validating failure on 192.168.1.50...
+======================================
+Septum Scan & Report Complete.
+Final Report: VLAN10_to_CDE_eth1.10_PCI_Report.csv
+======================================
+```
+
+### Final Report Structure (`_PCI_Report.csv`)
+The report is designed to be concise and audit-ready.
+
+**Scenario:** You tested a `/24`, a single IP, and a `/16`. Only one IP (`192.168.1.50`) had open ports.
+
+| Source_IP | Destination_Target | Segmentation_Status | Port | Protocol | State | Reason | Service |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 10.10.10.10 | **192.168.1.50** | **Segmentation Failed** | 22 | tcp | open | syn-ack | ssh |
+| 10.10.10.10 | **192.168.1.50** | **Segmentation Failed** | 443 | tcp | open | syn-ack | https |
+| 10.10.10.10 | **192.168.1.0/24** | **Segmentation Failed (Partial)** | N/A | N/A | Multiple | See IP entries | N/A |
+| 10.10.10.10 | **10.50.10.5** | **Segmentation Passed** | N/A | N/A | Filtered | No Response | N/A |
+| 10.10.10.10 | **172.16.0.0/16** | **Segmentation Passed** | N/A | N/A | Filtered | No Response | N/A |
+
+**Logic Rules:**
+- **Clean Pass:** If a network or IP has zero open ports, it gets one single "Segmentation Passed" row.
+- **Failures:** If an IP within a network fails, each open port is listed individually.
+- **Summarization:** A network containing a failed IP is marked as "Segmentation Failed (Partial)" to provide context without listing every other passing IP in that block.
