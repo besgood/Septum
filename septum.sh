@@ -39,6 +39,9 @@ if [ "$MODE" == "2" ]; then
     fi
     OUTPUT_PREFIX="${OUTPUT_XML%.xml}"
 
+    # Read the source IP used in the original scan from the paused.conf
+    SOURCE_IP=$(grep "^source-ip" "$RESUME_FILE" | cut -d= -f2 | tr -d " " | tr -d "\r")
+
     echo "Resuming masscan from $RESUME_FILE..."
     echo "Output will be appended/saved to $OUTPUT_XML"
 
@@ -131,7 +134,7 @@ try:
     tree = ET.parse(xml_file)
     root = tree.getroot()
 except Exception as e:
-    print("Error parsing XML (might be empty): " + str(e))
+    # If XML is empty or malformed, it likely means no ports were open
     sys.exit(0)
 
 targets = {}
@@ -160,19 +163,22 @@ EOF_PY
     python3 /tmp/parse_masscan.py "$OUTPUT_XML" "$NMAP_TARGETS"
     rm -f /tmp/parse_masscan.py
 
+    FINAL_CSV="${OUTPUT_PREFIX}_PCI_Report.csv"
+    echo "Source_IP,Destination_IP,Port,Protocol,State,Reason,Service" > "$FINAL_CSV"
+
     if [ ! -f "$NMAP_TARGETS" ] || [ ! -s "$NMAP_TARGETS" ]; then
         echo "======================================"
         echo "SUCCESS: No open ports found!"
         echo "The segmentation is intact. Proof saved in $OUTPUT_XML"
         echo "======================================"
+        # Write the clean pass to the CSV report
+        echo "$SOURCE_IP,Segmentation Passed,N/A,N/A,Filtered/Closed,No Response,N/A" >> "$FINAL_CSV"
+        echo "Clean report saved to: $FINAL_CSV"
         exit 0
     fi
 
     echo "WARNING: Found open ports! Moving to Stage 2: Nmap Validation..."
     echo "Running surgical Nmap scans on the specific open ports to grab PCI evidence..."
-
-    FINAL_CSV="${OUTPUT_PREFIX}_PCI_Report.csv"
-    echo "IP,Port,Protocol,State,Reason,Service" > "$FINAL_CSV"
 
     cat << "EOF_NMAP_PY" > /tmp/parse_nmap.py
 import sys
@@ -180,7 +186,8 @@ import xml.etree.ElementTree as ET
 
 xml_file = sys.argv[1]
 csv_file = sys.argv[2]
-ip = sys.argv[3]
+target_ip = sys.argv[3]
+source_ip = sys.argv[4]
 
 try:
     tree = ET.parse(xml_file)
@@ -200,7 +207,7 @@ with open(csv_file, "a") as f:
             reason = state_elem.get("reason") if state_elem is not None else ""
             service_elem = port.find("service")
             service = service_elem.get("name") if service_elem is not None else ""
-            f.write(f"{ip},{portid},{proto},{state},{reason},{service}\n")
+            f.write(f"{source_ip},{target_ip},{portid},{proto},{state},{reason},{service}\n")
 EOF_NMAP_PY
 
     TOTAL_HOSTS=$(wc -l < "$NMAP_TARGETS")
@@ -214,7 +221,7 @@ EOF_NMAP_PY
         echo "[$CURRENT/$TOTAL_HOSTS] Validating $IP on ports $PORT_LIST..."
         sudo nmap -Pn -sS -sV -p "$PORT_LIST" "$IP" -oX "/tmp/nmap_$IP.xml" > /dev/null 2>&1
 
-        python3 /tmp/parse_nmap.py "/tmp/nmap_$IP.xml" "$FINAL_CSV" "$IP"
+        python3 /tmp/parse_nmap.py "/tmp/nmap_$IP.xml" "$FINAL_CSV" "$IP" "$SOURCE_IP"
         rm -f "/tmp/nmap_$IP.xml"
     done < "$NMAP_TARGETS"
 
