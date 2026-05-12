@@ -46,6 +46,25 @@ if [ "$MODE" == "2" ]; then
         read -p "Enter the path to the target IP list file used in the original scan: " IP_LIST
     fi
 
+    # Try to find interface from resume file
+    INTERFACE=$(grep "^adapter =" "$RESUME_FILE" | cut -d= -f2 | tr -d " " | tr -d "\r")
+    if [ -z "$INTERFACE" ]; then
+        echo "Could not determine interface from $RESUME_FILE."
+        read -p "Enter the interface used in the original scan: " INTERFACE
+    fi
+
+    # PCAP Capture logic for Resume
+    echo ""
+    read -p "Enable PCAP capture for this resumed session? (y/n) [y]: " ENABLE_PCAP
+    ENABLE_PCAP=${ENABLE_PCAP:-y}
+    if [[ "$ENABLE_PCAP" =~ ^[Yy]$ ]]; then
+        PCAP_FILE="${OUTPUT_PREFIX}_Resume_$(date +%s)_Evidence.pcap"
+        echo "Starting tcpdump on $INTERFACE to $PCAP_FILE..."
+        sudo tcpdump -i "$INTERFACE" -n -w "$PCAP_FILE" >/dev/null 2>&1 &
+        TCPDUMP_PID=$!
+        trap "sudo kill $TCPDUMP_PID 2>/dev/null" EXIT
+    fi
+
     echo "Resuming masscan from $RESUME_FILE..."
     sudo masscan --resume "$RESUME_FILE"
 
@@ -131,16 +150,21 @@ final_csv = sys.argv[4]
 failed_hosts = {} # ip -> [ports]
 if os.path.exists(masscan_xml) and os.path.getsize(masscan_xml) > 0:
     try:
-        tree = ET.parse(masscan_xml)
-        root = tree.getroot()
-        for host in root.findall("host"):
-            addr = host.find("address").get("addr")
-            ports = []
-            for p in host.find("ports").findall("port"):
-                if p.find("state").get("state") == "open":
-                    ports.append(p.get("portid"))
-            if ports:
-                failed_hosts[addr] = ports
+        for event, elem in ET.iterparse(masscan_xml, events=("end",)):
+            if elem.tag == "host":
+                addr_elem = elem.find("address")
+                if addr_elem is not None:
+                    addr = addr_elem.get("addr")
+                    ports = []
+                    ports_elem = elem.find("ports")
+                    if ports_elem is not None:
+                        for p in ports_elem.findall("port"):
+                            state_elem = p.find("state")
+                            if state_elem is not None and state_elem.get("state") == "open":
+                                ports.append(p.get("portid"))
+                    if ports:
+                        failed_hosts[addr] = ports
+                elem.clear() # Free memory
     except:
         pass
 
