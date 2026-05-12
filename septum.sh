@@ -87,6 +87,18 @@ elif [ "$MODE" == "1" ]; then
     OUTPUT_XML="${OUTPUT_PREFIX}.xml"
 
     echo ""
+    read -p "Enable PCAP capture for QSA evidence? (y/n) [y]: " ENABLE_PCAP
+    ENABLE_PCAP=${ENABLE_PCAP:-y}
+
+    if [[ "$ENABLE_PCAP" =~ ^[Yy]$ ]]; then
+        PCAP_FILE="${OUTPUT_PREFIX}_Evidence.pcap"
+        echo "Starting tcpdump on $INTERFACE to $PCAP_FILE..."
+        sudo tcpdump -i "$INTERFACE" -n -w "$PCAP_FILE" >/dev/null 2>&1 &
+        TCPDUMP_PID=$!
+        trap "sudo kill $TCPDUMP_PID 2>/dev/null" EXIT
+    fi
+
+    echo ""
     echo "Starting Stage 1: Masscan..."
     sudo masscan -iL "$IP_LIST" -p"$PORT_ARGS" -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML"
 
@@ -199,6 +211,13 @@ EOF_PY
 
     python3 /tmp/septum_orchestrator.py "$OUTPUT_XML" "$IP_LIST" "$SOURCE_IP" "$FINAL_CSV"
     rm -f /tmp/septum_orchestrator.py
+
+    if [[ "$ENABLE_PCAP" =~ ^[Yy]$ ]] && [ -n "$TCPDUMP_PID" ]; then
+        echo "Stopping PCAP capture..."
+        sudo kill $TCPDUMP_PID 2>/dev/null
+        trap - EXIT
+        echo "Evidence PCAP: $PCAP_FILE"
+    fi
 
     echo "======================================"
     echo "Septum Scan & Report Complete."
