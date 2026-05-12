@@ -1,69 +1,104 @@
 # Septum V2: PCI DSS Segmentation Tester
 
-Septum is a specialized, asynchronous network scanning wrapper designed to prove PCI DSS network segmentation (Requirement 11.4) across massive enterprise subnets (e.g., 60,000+ IPs).
+**PCI-Compliant Two-Stage Segmentation Tester (Masscan + Nmap)**
 
-## The Methodology
-Septum uses a highly optimized Two-Stage approach to safely scan entire networks without causing Denial of Service (DoS) conditions on stateful firewalls:
+Septum is an asynchronous, high-speed network segmentation testing tool designed for PCI DSS compliance audits. It solves the problem of scanning large Enterprise environments (e.g., /16s, /21s) from isolated testing subnets (VLANs, Guest WiFi) rapidly while maintaining strict QSA evidence requirements.
 
-1. **Stage 1 (Masscan):** Conducts a high-speed, asynchronous sweep across the target IP list to prove a negative (that ports are closed/filtered).
-2. **Stage 2 (Nmap):** If failures are detected, Septum automatically runs surgical Nmap scans against those specific IP/Port combinations to grab Service Banners and `--reason` codes for PCI evidence.
+## Architecture & Workflow
 
----
+Septum utilizes a highly optimized Two-Stage methodology:
 
-## Walkthrough: Running a Scan
+1.  **Stage 1: Asynchronous Sweep (Masscan)**
+    - Performs an extremely fast, asynchronous sweep of targets across all 65,535 ports (or the top 1,000) using a custom TCP/IP stack.
+    - Operates safely within configurable packet-per-second (pps) rate limits to avoid toppling network infrastructure.
+    - Output is written to an intermediary XML file.
 
-### 1. Prepare your Target List
-Create a file named `ips.txt` containing the networks or IPs you want to test.
-```text
-192.168.1.0/24
-10.50.10.5
-172.16.0.0/16
-```
+2.  **Stage 2: Validation & QSA Evidence (Nmap + PCAP)**
+    - An embedded Python orchestrator dynamically parses the Masscan results.
+    - For any target where Masscan found an open port (indicating a segmentation failure), the orchestrator automatically launches a targeted `nmap -sS -sV` scan against those specific IP/Port combinations.
+    - Nmap retrieves the state, `--reason` flag, and service banner required for PCI DSS 11.4 evidence.
+    - **PCAP Evidence**: Optionally runs a background `tcpdump` process bound to the testing interface. This provides undeniable cryptographic proof (raw PCAPs) to QSAs that packets were sent into the CDE and subsequently dropped (no SYN-ACK), validating the firewall rules.
 
-### 2. Execute Septum
+## Features
+
+- **Massive Scope Support**: Designed to scan tens of thousands of IPs without crashing.
+- **Interactive Pause/Resume**: Masscan can be paused via `Ctrl+C` and safely resumed via the interactive menu using `paused.conf`.
+- **PCAP Evidence Generation**: Automatically manages `tcpdump` to capture proof of segmentation isolation.
+- **CSV Output**: Consolidates the results into a QSA-friendly `_PCI_Report.csv` clearly marking "Segmentation Passed" or "Segmentation Failed."
+
+## Installation
+
+### Prerequisites
+
+Septum requires `masscan`, `nmap`, and `python3` to operate.
+
 ```bash
-./septum.sh
+sudo apt-get update
+sudo apt-get install -y masscan nmap python3 tcpdump
 ```
 
-### 3. Interactive Inputs
-- **Test Name:** `VLAN10_to_CDE` (Used for filenames)
-- **Target List:** `ips.txt`
-- **Interface:** `eth1.10` (The restricted VLAN interface)
-- **Port Scope:** `1` (Full 65,535 ports)
-- **Packet Rate:** `2000` (Safe for enterprise firewalls)
+### Clone and Setup
 
-### 4. Interactive Controls
-- **[Ctrl+C]**: Pause the scan. Masscan saves progress to `paused.conf`.
-- **Resume**: Run `./septum.sh` again and select **Option 2** to pick up exactly where you left off.
+```bash
+git clone https://github.com/yourusername/Septum.git
+cd Septum
+chmod +x septum.sh
+```
 
----
+## Usage
 
-## Expected Output
+Create a file containing your target CDE IPs or subnets (e.g., `ips.txt`). You can include individual IPs, IP ranges, or CIDR blocks.
 
-### Terminal Workflow
 ```text
-Stage 1 Complete. Generating PCI Report...
-[*] Validating failure on 192.168.1.50...
-======================================
-Septum Scan & Report Complete.
-Final Report: VLAN10_to_CDE_eth1.10_PCI_Report.csv
-======================================
+10.50.10.15
+10.50.11.0/24
+10.100.0.0/16
 ```
 
-### Final Report Structure (`_PCI_Report.csv`)
-The report is designed to be concise and audit-ready.
+Execute Septum as root:
 
-**Scenario:** You tested a `/24`, a single IP, and a `/16`. Only one IP (`192.168.1.50`) had open ports.
+```bash
+sudo ./septum.sh
+```
 
-| Source_IP | Destination_Target | Segmentation_Status | Port | Protocol | State | Reason | Service |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 10.10.10.10 | **192.168.1.50** | **Segmentation Failed** | 22 | tcp | open | syn-ack | ssh |
-| 10.10.10.10 | **192.168.1.50** | **Segmentation Failed** | 443 | tcp | open | syn-ack | https |
-| 10.10.10.10 | **192.168.1.0/24** | **Segmentation Failed (Partial)** | N/A | N/A | Multiple | See IP entries | N/A |
-| 10.10.10.10 | **10.50.10.5** | **Segmentation Passed** | N/A | N/A | Filtered | No Response | N/A |
-| 10.10.10.10 | **172.16.0.0/16** | **Segmentation Passed** | N/A | N/A | Filtered | No Response | N/A |
+### Interactive Example
 
-**Logic Rules:**
-- **Clean Pass:** If a network or IP has zero open ports, it gets one single "Segmentation Passed" row.
-- **Failures:** If an IP within a network fails, each open port is listed individually.
-- **Summarization:** A network containing a failed IP is marked as "Segmentation Failed (Partial)" to provide context without listing every other passing IP in that block.
+```text
+======================================
+  Septum Segmentation Tester (v2.0)
+======================================
+
+Select Mode:
+1) Start a New Scan
+2) Resume an Interrupted Masscan
+Choice [1/2]: 1
+
+Enter a name for this test: PCI_VLAN_200_TEST
+
+Enter the path to the target IP list file (ips.txt): /home/kali/targets.txt
+
+Available Network Interfaces:
+eth0             UP
+eth0.200         UP
+
+Enter the interface to test from: eth0.200
+
+Select Port Scan Scope:
+1) Full 65,535 Ports
+2) Top 1,000 Ports
+Choice [1/2]: 1
+
+Set max packet rate (pps) [Default: 2000]: 5000
+
+Enable PCAP capture for QSA evidence? (y/n) [y]: y
+Starting tcpdump on eth0.200 to PCI_VLAN_200_TEST_eth0.200_Evidence.pcap...
+
+Starting Stage 1: Masscan...
+...
+```
+
+### Output Files
+
+Upon completion, Septum generates two critical pieces of evidence:
+1.  **`PCI_VLAN_200_TEST_eth0.200_PCI_Report.csv`**: The parsed, human-readable report.
+2.  **`PCI_VLAN_200_TEST_eth0.200_Evidence.pcap`**: The raw packet capture proving the packets left the interface.
