@@ -86,7 +86,7 @@ if [ "$MODE" == "2" ]; then
     if [ -z "$INTERFACE" ]; then
         echo "Could not determine interface from $RESUME_FILE."
         echo "Available Network Interfaces:"
-        IFACES=($(ip -br link show | awk '{print $1}'))
+        IFACES=($(ip -br link show | awk '{print $1}' | cut -d@ -f1))
         for i in "${!IFACES[@]}"; do
             state=$(ip -br link show dev "${IFACES[$i]}" | awk '{print $2}')
             echo "$((i+1))) ${IFACES[$i]} ($state)"
@@ -156,7 +156,7 @@ elif [ "$MODE" == "1" ]; then
 
     echo ""
     echo "Available Network Interfaces:"
-    IFACES=($(ip -br link show | awk '{print $1}'))
+    IFACES=($(ip -br link show | awk '{print $1}' | cut -d@ -f1))
     for i in "${!IFACES[@]}"; do
         state=$(ip -br link show dev "${IFACES[$i]}" | awk '{print $2}')
         echo "$((i+1))) ${IFACES[$i]} ($state)"
