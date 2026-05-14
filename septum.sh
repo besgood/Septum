@@ -112,7 +112,7 @@ if [ "$MODE" == "2" ]; then
     fi
 
     echo "Resuming masscan from $RESUME_FILE..."
-    sudo masscan --resume "$RESUME_FILE"
+    sudo masscan --resume "$RESUME_FILE" --interactive
 
     STAGE2=1
 elif [ "$MODE" == "1" ]; then
@@ -219,7 +219,7 @@ elif [ "$MODE" == "1" ]; then
     fi
 
     echo "Starting Stage 1: Masscan..."
-    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML"
+    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML" --interactive
 
     STAGE2=1
 else
