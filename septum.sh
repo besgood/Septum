@@ -21,14 +21,30 @@ read -p "Choice [1/2]: " MODE
 
 if [ "$MODE" == "2" ]; then
     echo ""
-    echo "Available paused.conf files in current directory:"
-    ls -1 paused.conf* 2>/dev/null || echo "No paused.conf files found."
-    echo ""
-    read -p "Enter the name of the paused file to resume (default: paused.conf): " RESUME_FILE
-    RESUME_FILE=${RESUME_FILE:-paused.conf}
-    if [ ! -f "$RESUME_FILE" ]; then
-        echo "Error: File $RESUME_FILE not found."
-        exit 1
+    echo "Available Resume Files:"
+    RESUME_FILES=(paused.conf*)
+    if [ ! -e "${RESUME_FILES[0]}" ]; then
+        read -p "No paused.conf files found automatically. Enter the path manually: " RESUME_FILE
+        if [ ! -f "$RESUME_FILE" ]; then echo "[-] Error: File $RESUME_FILE not found."; exit 1; fi
+    else
+        for i in "${!RESUME_FILES[@]}"; do
+            echo "$((i+1))) ${RESUME_FILES[$i]}"
+        done
+        echo "$(( ${#RESUME_FILES[@]} + 1 ))) Enter a path manually"
+
+        read -p "Select a file to resume [1-$(( ${#RESUME_FILES[@]} + 1 ))]: " RESUME_CHOICE
+        if ! [[ "$RESUME_CHOICE" =~ ^[0-9]+$ ]] || [ "$RESUME_CHOICE" -lt 1 ] || [ "$RESUME_CHOICE" -gt $(( ${#RESUME_FILES[@]} + 1 )) ]; then
+            echo "[-] Error: Invalid selection."
+            exit 1
+        fi
+
+        if [ "$RESUME_CHOICE" -eq $(( ${#RESUME_FILES[@]} + 1 )) ]; then
+            read -p "Enter the path to the paused file manually: " RESUME_FILE
+        else
+            RESUME_FILE="${RESUME_FILES[$((RESUME_CHOICE-1))]}"
+        fi
+
+        if [ ! -f "$RESUME_FILE" ]; then echo "[-] Error: File $RESUME_FILE not found."; exit 1; fi
     fi
     echo ""
 
@@ -43,14 +59,44 @@ if [ "$MODE" == "2" ]; then
     # Capture the original IP_LIST from the masscan command line if possible, or ask
     IP_LIST=$(grep "^# masscan" "$RESUME_FILE" | grep -o "\-iL [^ ]*" | cut -d" " -f2)
     if [ -z "$IP_LIST" ]; then
-        read -p "Enter the path to the target IP list file used in the original scan: " IP_LIST
+        echo ""
+        echo "Could not auto-detect target IP list from $RESUME_FILE."
+        if [ -d "targets" ]; then TARGET_FILES=(targets/*.txt); else TARGET_FILES=(*.txt); fi
+        if [ ! -e "${TARGET_FILES[0]}" ]; then
+            read -p "Enter the path to the target IP list file used in the original scan: " IP_LIST
+        else
+            echo "Available Target Lists:"
+            for i in "${!TARGET_FILES[@]}"; do echo "$((i+1))) ${TARGET_FILES[$i]}"; done
+            echo "$(( ${#TARGET_FILES[@]} + 1 ))) Enter a path manually"
+            read -p "Select the target list [1-$(( ${#TARGET_FILES[@]} + 1 ))]: " TARGET_CHOICE
+            if ! [[ "$TARGET_CHOICE" =~ ^[0-9]+$ ]] || [ "$TARGET_CHOICE" -lt 1 ] || [ "$TARGET_CHOICE" -gt $(( ${#TARGET_FILES[@]} + 1 )) ]; then
+                echo "[-] Error: Invalid selection."
+                exit 1
+            fi
+            if [ "$TARGET_CHOICE" -eq $(( ${#TARGET_FILES[@]} + 1 )) ]; then
+                read -p "Enter the path manually: " IP_LIST
+            else
+                IP_LIST="${TARGET_FILES[$((TARGET_CHOICE-1))]}"
+            fi
+        fi
     fi
 
     # Try to find interface from resume file
     INTERFACE=$(grep "^adapter =" "$RESUME_FILE" | cut -d= -f2 | tr -d " " | tr -d "\r")
     if [ -z "$INTERFACE" ]; then
         echo "Could not determine interface from $RESUME_FILE."
-        read -p "Enter the interface used in the original scan: " INTERFACE
+        echo "Available Network Interfaces:"
+        IFACES=($(ip -br link show | awk '{print $1}'))
+        for i in "${!IFACES[@]}"; do
+            state=$(ip -br link show dev "${IFACES[$i]}" | awk '{print $2}')
+            echo "$((i+1))) ${IFACES[$i]} ($state)"
+        done
+        read -p "Select the interface used in the original scan [1-${#IFACES[@]}]: " IFACE_CHOICE
+        if ! [[ "$IFACE_CHOICE" =~ ^[0-9]+$ ]] || [ "$IFACE_CHOICE" -lt 1 ] || [ "$IFACE_CHOICE" -gt "${#IFACES[@]}" ]; then
+            echo "[-] Error: Invalid interface selection."
+            exit 1
+        fi
+        INTERFACE="${IFACES[$((IFACE_CHOICE-1))]}"
     fi
 
     # PCAP Capture logic for Resume
@@ -71,31 +117,86 @@ if [ "$MODE" == "2" ]; then
     STAGE2=1
 elif [ "$MODE" == "1" ]; then
     echo ""
-    read -p "Enter a name for this test: " TEST_NAME
-    if [ -z "$TEST_NAME" ]; then echo "Test name required."; exit 1; fi
+    read -p "Enter a name for this test (no spaces): " TEST_NAME
+    if [ -z "$TEST_NAME" ]; then echo "[-] Error: Test name required."; exit 1; fi
+    TEST_NAME=$(echo "$TEST_NAME" | tr -d ' ')
 
     echo ""
-    read -p "Enter the path to the target IP list file (ips.txt): " IP_LIST
-    if [ ! -f "$IP_LIST" ]; then echo "Error: File $IP_LIST not found!"; exit 1; fi
+    echo "Available Target Lists:"
+    # Gather files from targets/ if it exists, otherwise current dir
+    if [ -d "targets" ]; then
+        TARGET_FILES=(targets/*.txt)
+    else
+        TARGET_FILES=(*.txt)
+    fi
+
+    # Check if there are actually files, or if the glob failed
+    if [ ! -e "${TARGET_FILES[0]}" ]; then
+        read -p "No .txt files found. Enter the path to the target IP list file manually: " IP_LIST
+    else
+        for i in "${!TARGET_FILES[@]}"; do
+            echo "$((i+1))) ${TARGET_FILES[$i]}"
+        done
+        echo "$(( ${#TARGET_FILES[@]} + 1 ))) Enter a path manually"
+
+        read -p "Select a target list [1-$(( ${#TARGET_FILES[@]} + 1 ))]: " TARGET_CHOICE
+        if ! [[ "$TARGET_CHOICE" =~ ^[0-9]+$ ]] || [ "$TARGET_CHOICE" -lt 1 ] || [ "$TARGET_CHOICE" -gt $(( ${#TARGET_FILES[@]} + 1 )) ]; then
+            echo "[-] Error: Invalid selection."
+            exit 1
+        fi
+
+        if [ "$TARGET_CHOICE" -eq $(( ${#TARGET_FILES[@]} + 1 )) ]; then
+            read -p "Enter the path to the target IP list file: " IP_LIST
+        else
+            IP_LIST="${TARGET_FILES[$((TARGET_CHOICE-1))]}"
+        fi
+    fi
+
+    if [ ! -f "$IP_LIST" ]; then echo "[-] Error: File $IP_LIST not found!"; exit 1; fi
 
     echo ""
     echo "Available Network Interfaces:"
-    ip -br link show | awk "{print \$1, \$2}"
+    IFACES=($(ip -br link show | awk '{print $1}'))
+    for i in "${!IFACES[@]}"; do
+        state=$(ip -br link show dev "${IFACES[$i]}" | awk '{print $2}')
+        echo "$((i+1))) ${IFACES[$i]} ($state)"
+    done
     echo ""
 
-    read -p "Enter the interface to test from: " INTERFACE
+    read -p "Select the interface to test from [1-${#IFACES[@]}]: " IFACE_CHOICE
+    if ! [[ "$IFACE_CHOICE" =~ ^[0-9]+$ ]] || [ "$IFACE_CHOICE" -lt 1 ] || [ "$IFACE_CHOICE" -gt "${#IFACES[@]}" ]; then
+        echo "[-] Error: Invalid interface selection."
+        exit 1
+    fi
+    INTERFACE="${IFACES[$((IFACE_CHOICE-1))]}"
+
     if ! ip link show "$INTERFACE" > /dev/null 2>&1; then echo "Interface error."; exit 1; fi
 
-    SOURCE_IP=$(ip -4 addr show "$INTERFACE" | awk "/inet/ {print \$2}" | cut -d/ -f1 | head -n 1)
+    SOURCE_IP=$(ip -4 addr show "$INTERFACE" | awk '/inet/ {print $2}' | cut -d/ -f1 | head -n 1)
+    if [ -z "$SOURCE_IP" ]; then
+        echo "[-] Error: Interface $INTERFACE has no IPv4 address assigned."
+        exit 1
+    fi
 
     echo ""
     echo "Select Port Scan Scope:"
-    echo "1) Full 65,535 Ports"
+    echo "1) Top 100 Ports"
     echo "2) Top 1,000 Ports"
-    read -p "Choice [1/2]: " SCOPE_CHOICE
+    echo "3) Top 5,000 Ports"
+    echo "4) Top 10,000 Ports"
+    echo "5) All Ports (1-65535)"
+    echo "6) Manually Enter Ports"
+    read -p "Choice [1-6]: " SCOPE_CHOICE
     case $SCOPE_CHOICE in
-        2) PORT_ARGS="1-1024,3389,8000,8080,8443,9000" ;;
-        *) PORT_ARGS="1-65535" ;;
+        1) PORT_ARGS="--top-ports 100" ;;
+        2) PORT_ARGS="--top-ports 1000" ;;
+        3) PORT_ARGS="--top-ports 5000" ;;
+        4) PORT_ARGS="--top-ports 10000" ;;
+        6) read -p "Enter ports (e.g. 80,443,1-1000): " CUSTOM_PORTS
+           CUSTOM_PORTS=$(echo "$CUSTOM_PORTS" | tr -d ' ')
+           if [ -z "$CUSTOM_PORTS" ]; then echo "[-] Error: Ports required."; exit 1; fi
+           PORT_ARGS="-p $CUSTOM_PORTS" ;;
+        *) PORT_ARGS="-p 1-65535" ;;
     esac
 
     echo ""
@@ -117,9 +218,8 @@ elif [ "$MODE" == "1" ]; then
         trap "sudo kill $TCPDUMP_PID 2>/dev/null" EXIT
     fi
 
-    echo ""
     echo "Starting Stage 1: Masscan..."
-    sudo masscan -iL "$IP_LIST" -p"$PORT_ARGS" -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML"
+    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML"
 
     STAGE2=1
 else
@@ -134,7 +234,8 @@ if [ "$STAGE2" == "1" ]; then
     echo "Source_IP,Destination_Target,Segmentation_Status,Port,Protocol,State,Reason,Service" > "$FINAL_CSV"
 
     # Stage 2 Orchestrator (Python)
-    cat << "EOF_PY" > /tmp/septum_orchestrator.py
+    SECURE_TMP=$(mktemp -d)
+    cat << "EOF_PY" > "$SECURE_TMP/septum_orchestrator.py"
 import sys
 import xml.etree.ElementTree as ET
 import ipaddress
@@ -145,6 +246,7 @@ masscan_xml = sys.argv[1]
 ip_list_file = sys.argv[2]
 source_ip = sys.argv[3]
 final_csv = sys.argv[4]
+tmp_dir = sys.argv[5]
 
 # 1. Parse Masscan for failures
 failed_hosts = {} # ip -> [ports]
@@ -199,7 +301,7 @@ for target in targets:
                 port_list = ",".join(failed_hosts[ip])
                 print(f"[*] Validating failure on {ip}...")
 
-                nmap_xml = f"/tmp/nmap_{ip}.xml"
+                nmap_xml = f"{tmp_dir}/nmap_{ip}.xml"
                 subprocess.run(["sudo", "nmap", "-Pn", "-sS", "-sV", "-p", port_list, ip, "-oX", nmap_xml], capture_output=True)
 
                 if os.path.exists(nmap_xml):
@@ -233,8 +335,8 @@ for target in targets:
 
 EOF_PY
 
-    python3 /tmp/septum_orchestrator.py "$OUTPUT_XML" "$IP_LIST" "$SOURCE_IP" "$FINAL_CSV"
-    rm -f /tmp/septum_orchestrator.py
+    python3 "$SECURE_TMP/septum_orchestrator.py" "$OUTPUT_XML" "$IP_LIST" "$SOURCE_IP" "$FINAL_CSV" "$SECURE_TMP"
+    rm -rf "$SECURE_TMP"
 
     if [[ "$ENABLE_PCAP" =~ ^[Yy]$ ]] && [ -n "$TCPDUMP_PID" ]; then
         echo "Stopping PCAP capture..."
