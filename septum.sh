@@ -7,6 +7,9 @@ echo "======================================"
 echo "  Septum Segmentation Tester (v2.0)   "
 echo "======================================"
 
+# Ensure Ctrl-C safely pauses masscan and aborts Stage 2
+trap 'echo -e "\n[-] Scan interrupted by user. Masscan should have saved paused.conf."; exit 1' INT
+
 if ! command -v masscan &> /dev/null; then
     echo "[-] Error: masscan is required for Stage 1 discovery."
     echo "[*] Please install it: sudo apt-get update && sudo apt-get install -y masscan"
@@ -112,7 +115,7 @@ if [ "$MODE" == "2" ]; then
     fi
 
     echo "Resuming masscan from $RESUME_FILE..."
-    sudo masscan --resume "$RESUME_FILE" --interactive
+    sudo masscan --resume "$RESUME_FILE"
 
     STAGE2=1
 elif [ "$MODE" == "1" ]; then
@@ -219,7 +222,7 @@ elif [ "$MODE" == "1" ]; then
     fi
 
     echo "Starting Stage 1: Masscan..."
-    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML" --interactive
+    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML"
 
     STAGE2=1
 else
