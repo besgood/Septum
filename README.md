@@ -1,4 +1,4 @@
-# Septum V2: PCI DSS Segmentation Tester
+# Septum
 
 **PCI-Compliant Two-Stage Segmentation Tester (Masscan + Nmap)**
 
@@ -9,8 +9,8 @@ Septum is an asynchronous, high-speed network segmentation testing tool designed
 Septum utilizes a highly optimized Two-Stage methodology:
 
 1.  **Stage 1: Asynchronous Sweep (Masscan)**
-    - Performs an extremely fast, asynchronous sweep of targets across all 65,535 ports (or the top 1,000) using a custom TCP/IP stack.
-    - Operates safely within configurable packet-per-second (pps) rate limits to avoid toppling network infrastructure.
+    - Performs an extremely fast, asynchronous sweep of targets across a configurable port scope using a custom TCP/IP stack.
+    - Operates safely within packet-per-second (pps) rate limits to avoid toppling network infrastructure.
     - Output is written to an intermediary XML file.
 
 2.  **Stage 2: Validation & QSA Evidence (Nmap + PCAP)**
@@ -19,12 +19,18 @@ Septum utilizes a highly optimized Two-Stage methodology:
     - Nmap retrieves the state, `--reason` flag, and service banner required for PCI DSS 11.4 evidence.
     - **PCAP Evidence**: Optionally runs a background `tcpdump` process bound to the testing interface. This provides undeniable cryptographic proof (raw PCAPs) to QSAs that packets were sent into the CDE and subsequently dropped (no SYN-ACK), validating the firewall rules.
 
-## Features
+## New Features (v2.1)
 
+- **Interactive Menu System**: No more manual typing for common paths. Numbered menus for mode, resume files, target lists, and network interfaces.
+- **Workflow-Aware Target Lists**: Automatically scans the `targets/` directory for `.txt` files and presents them as options.
+- **Granular Port Selection**:
+  - Top 100, 1,000, 5,000, or 10,000 ports.
+  - All 65,535 ports.
+  - Custom manual port ranges.
+- **Secure Processing**: Utilizes randomized, permission-locked temporary directories for backend processing to prevent symlink attacks and race conditions.
 - **Massive Scope Support**: Designed to scan tens of thousands of IPs without crashing.
-- **Interactive Pause/Resume**: Masscan can be paused via `Ctrl+C` and safely resumed via the interactive menu using `paused.conf`.
-- **PCAP Evidence Generation**: Automatically manages `tcpdump` to capture proof of segmentation isolation.
-- **CSV Output**: Consolidates the results into a QSA-friendly `_PCI_Report.csv` clearly marking "Segmentation Passed" or "Segmentation Failed."
+- **Interactive Pause/Resume**: Masscan can be paused via `Ctrl+C` and easily resumed via the interactive menu.
+- **CSV Output**: Consolidates results into a QSA-friendly `_PCI_Report.csv` clearly marking "Segmentation Passed" or "Segmentation Failed."
 
 ## Installation
 
@@ -42,12 +48,13 @@ sudo apt-get install -y masscan nmap python3 tcpdump
 ```bash
 git clone https://github.com/yourusername/Septum.git
 cd Septum
+mkdir targets
 chmod +x septum.sh
 ```
 
 ## Usage
 
-Create a file containing your target CDE IPs or subnets (e.g., `ips.txt`). You can include individual IPs, IP ranges, or CIDR blocks.
+Place your target CDE IPs or subnets (e.g., `ips.txt`) in the `targets/` folder. You can include individual IPs, IP ranges, or CIDR blocks.
 
 ```text
 10.50.10.15
@@ -73,20 +80,27 @@ Select Mode:
 2) Resume an Interrupted Masscan
 Choice [1/2]: 1
 
-Enter a name for this test: PCI_VLAN_200_TEST
+Enter a name for this test (no spaces): PCI_VLAN_200_TEST
 
-Enter the path to the target IP list file (ips.txt): /home/kali/targets.txt
+Available Target Lists:
+1) targets/guest_wifi.txt
+2) targets/internal_cde.txt
+3) Enter a path manually
+Select a target list [1-3]: 2
 
 Available Network Interfaces:
-eth0             UP
-eth0.200         UP
-
-Enter the interface to test from: eth0.200
+1) eth0 (UP)
+2) eth0.200 (UP)
+Select the interface to test from [1-2]: 2
 
 Select Port Scan Scope:
-1) Full 65,535 Ports
+1) Top 100 Ports
 2) Top 1,000 Ports
-Choice [1/2]: 1
+3) Top 5,000 Ports
+4) Top 10,000 Ports
+5) All Ports (1-65535)
+6) Manually Enter Ports
+Choice [1-6]: 5
 
 Set max packet rate (pps) [Default: 2000]: 5000
 
