@@ -119,7 +119,7 @@ if [ "$MODE" == "2" ]; then
     ROUTER_IP=$(ip route show table all dev "$INTERFACE" 2>/dev/null | awk '/default/ {print $3}' | head -n 1)
     if [ -n "$ROUTER_IP" ]; then
         ping -c 1 -W 1 -I "$INTERFACE" "$ROUTER_IP" >/dev/null 2>&1
-        ROUTER_MAC=$(ip neigh show "$ROUTER_IP" dev "$INTERFACE" 2>/dev/null | awk '{print $5}' | grep -E '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+        ROUTER_MAC=$(ip neigh show "$ROUTER_IP" dev "$INTERFACE" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1)
         if [ -n "$ROUTER_MAC" ]; then
             MAC_ARGS="--router-mac $ROUTER_MAC"
         fi
@@ -241,7 +241,7 @@ elif [ "$MODE" == "1" ]; then
     ROUTER_IP=$(ip route show table all dev "$INTERFACE" 2>/dev/null | awk '/default/ {print $3}' | head -n 1)
     if [ -n "$ROUTER_IP" ]; then
         ping -c 1 -W 1 -I "$INTERFACE" "$ROUTER_IP" >/dev/null 2>&1
-        ROUTER_MAC=$(ip neigh show "$ROUTER_IP" dev "$INTERFACE" 2>/dev/null | awk '{print $5}' | grep -E '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+        ROUTER_MAC=$(ip neigh show "$ROUTER_IP" dev "$INTERFACE" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n 1)
         if [ -n "$ROUTER_MAC" ]; then
             MAC_ARGS="--router-mac $ROUTER_MAC"
         fi
@@ -252,25 +252,7 @@ elif [ "$MODE" == "1" ]; then
     fi
 
     echo "Starting Stage 1: Masscan..."
-#    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
-# --- METHOD 1 START: Native VLAN Logic ---
-    # Extract VLAN ID if the interface has a dot (e.g., eth0.200 -> 200)
-    VLAN_ID=$(echo "$INTERFACE" | cut -s -d. -f2)
-
-    if [ -n "$VLAN_ID" ]; then
-        # Get the physical base interface (e.g., eth0)
-        PHYS_INTERFACE=$(echo "$INTERFACE" | cut -d. -f1)
-
-        echo "[*] Detected VLAN sub-interface. Switching to native tagging on $PHYS_INTERFACE (VLAN $VLAN_ID)"
-
-        # We replace -e "$INTERFACE" with -e "$PHYS_INTERFACE" and add --vlan "$VLAN_ID"
-        sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$PHYS_INTERFACE" --vlan "$VLAN_ID" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
-    else
-        # Standard execution for physical interfaces
-        sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
-    fi
-    # --- METHOD 1 END ---
-
+    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
 
     STAGE2=1
 else
@@ -298,6 +280,7 @@ ip_list_file = sys.argv[2]
 source_ip = sys.argv[3]
 final_csv = sys.argv[4]
 tmp_dir = sys.argv[5]
+interface = sys.argv[6]
 
 # 1. Parse Masscan for failures
 failed_hosts = {} # ip -> [ports]
@@ -353,7 +336,7 @@ for target in targets:
                 print(f"[*] Validating failure on {ip}...")
 
                 nmap_xml = f"{tmp_dir}/nmap_{ip}.xml"
-                subprocess.run(["sudo", "nmap", "-Pn", "-sS", "-sV", "-p", port_list, ip, "-oX", nmap_xml], capture_output=True)
+                subprocess.run(["sudo", "nmap", "-Pn", "-sS", "-sV", "-e", interface, "-S", source_ip, "-p", port_list, ip, "-oX", nmap_xml], capture_output=True)
 
                 if os.path.exists(nmap_xml):
                     try:
@@ -386,7 +369,7 @@ for target in targets:
 
 EOF_PY
 
-    python3 "$SECURE_TMP/septum_orchestrator.py" "$OUTPUT_XML" "$IP_LIST" "$SOURCE_IP" "$FINAL_CSV" "$SECURE_TMP"
+    python3 "$SECURE_TMP/septum_orchestrator.py" "$OUTPUT_XML" "$IP_LIST" "$SOURCE_IP" "$FINAL_CSV" "$SECURE_TMP" "$INTERFACE"
     rm -rf "$SECURE_TMP"
 
     if [[ "$ENABLE_PCAP" =~ ^[Yy]$ ]] && [ -n "$TCPDUMP_PID" ]; then
