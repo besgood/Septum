@@ -114,8 +114,23 @@ if [ "$MODE" == "2" ]; then
         trap "sudo kill $TCPDUMP_PID 2>/dev/null" EXIT
     fi
 
+    # Advanced routing detection for Virtual NICs (PBR/VLANs)
+    MAC_ARGS=""
+    ROUTER_IP=$(ip route show table all dev "$INTERFACE" 2>/dev/null | awk '/default/ {print $3}' | head -n 1)
+    if [ -n "$ROUTER_IP" ]; then
+        ping -c 1 -W 1 -I "$INTERFACE" "$ROUTER_IP" >/dev/null 2>&1
+        ROUTER_MAC=$(ip neigh show "$ROUTER_IP" dev "$INTERFACE" 2>/dev/null | awk '{print $5}' | grep -E '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+        if [ -n "$ROUTER_MAC" ]; then
+            MAC_ARGS="--router-mac $ROUTER_MAC"
+        fi
+    fi
+    ADAPTER_MAC=$(ip link show dev "$INTERFACE" 2>/dev/null | awk '/link\/ether/ {print $2}')
+    if [ -n "$ADAPTER_MAC" ]; then
+        MAC_ARGS="$MAC_ARGS --adapter-mac $ADAPTER_MAC"
+    fi
+
     echo "Resuming masscan from $RESUME_FILE..."
-    sudo masscan --resume "$RESUME_FILE"
+    sudo masscan --resume "$RESUME_FILE" $MAC_ARGS
 
     STAGE2=1
 elif [ "$MODE" == "1" ]; then
@@ -221,8 +236,41 @@ elif [ "$MODE" == "1" ]; then
         trap "sudo kill $TCPDUMP_PID 2>/dev/null" EXIT
     fi
 
+    # Advanced routing detection for Virtual NICs (PBR/VLANs)
+    MAC_ARGS=""
+    ROUTER_IP=$(ip route show table all dev "$INTERFACE" 2>/dev/null | awk '/default/ {print $3}' | head -n 1)
+    if [ -n "$ROUTER_IP" ]; then
+        ping -c 1 -W 1 -I "$INTERFACE" "$ROUTER_IP" >/dev/null 2>&1
+        ROUTER_MAC=$(ip neigh show "$ROUTER_IP" dev "$INTERFACE" 2>/dev/null | awk '{print $5}' | grep -E '^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$')
+        if [ -n "$ROUTER_MAC" ]; then
+            MAC_ARGS="--router-mac $ROUTER_MAC"
+        fi
+    fi
+    ADAPTER_MAC=$(ip link show dev "$INTERFACE" 2>/dev/null | awk '/link\/ether/ {print $2}')
+    if [ -n "$ADAPTER_MAC" ]; then
+        MAC_ARGS="$MAC_ARGS --adapter-mac $ADAPTER_MAC"
+    fi
+
     echo "Starting Stage 1: Masscan..."
-    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" --rate "$RATE" -oX "$OUTPUT_XML"
+#    sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
+# --- METHOD 1 START: Native VLAN Logic ---
+    # Extract VLAN ID if the interface has a dot (e.g., eth0.200 -> 200)
+    VLAN_ID=$(echo "$INTERFACE" | cut -s -d. -f2)
+
+    if [ -n "$VLAN_ID" ]; then
+        # Get the physical base interface (e.g., eth0)
+        PHYS_INTERFACE=$(echo "$INTERFACE" | cut -d. -f1)
+
+        echo "[*] Detected VLAN sub-interface. Switching to native tagging on $PHYS_INTERFACE (VLAN $VLAN_ID)"
+
+        # We replace -e "$INTERFACE" with -e "$PHYS_INTERFACE" and add --vlan "$VLAN_ID"
+        sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$PHYS_INTERFACE" --vlan "$VLAN_ID" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
+    else
+        # Standard execution for physical interfaces
+        sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
+    fi
+    # --- METHOD 1 END ---
+
 
     STAGE2=1
 else
