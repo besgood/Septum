@@ -25,7 +25,24 @@ read -p "Choice [1/2/3]: " MODE
 
 if [ "$MODE" == "3" ]; then
     echo ""
-    read -p "Enter the path to the existing Masscan XML file: " OUTPUT_XML
+    echo "Available Masscan XML files in reports/:"
+    mkdir -p reports
+    XML_FILES=(reports/*.xml)
+    if [ ! -e "${XML_FILES[0]}" ]; then
+        read -p "No XML files found in reports/. Enter the path manually: " OUTPUT_XML
+    else
+        for i in "${!XML_FILES[@]}"; do echo "$((i+1))) ${XML_FILES[$i]}"; done
+        echo "$(( ${#XML_FILES[@]} + 1 ))) Enter a path manually"
+        read -p "Select an XML file [1-$(( ${#XML_FILES[@]} + 1 ))]: " XML_CHOICE
+        if ! [[ "$XML_CHOICE" =~ ^[0-9]+$ ]] || [ "$XML_CHOICE" -lt 1 ] || [ "$XML_CHOICE" -gt $(( ${#XML_FILES[@]} + 1 )) ]; then
+            echo "[-] Error: Invalid selection."; exit 1
+        fi
+        if [ "$XML_CHOICE" -eq $(( ${#XML_FILES[@]} + 1 )) ]; then
+            read -p "Enter the path manually: " OUTPUT_XML
+        else
+            OUTPUT_XML="${XML_FILES[$((XML_CHOICE-1))]}"
+        fi
+    fi
     if [ ! -f "$OUTPUT_XML" ]; then echo "[-] Error: File not found."; exit 1; fi
     OUTPUT_PREFIX="${OUTPUT_XML%.xml}"
 
@@ -280,7 +297,7 @@ elif [ "$MODE" == "1" ]; then
     read -p "Set max packet rate (pps) [Default: 2000]: " RATE
     RATE=${RATE:-2000}
 
-    EVIDENCE_DIR="${TEST_NAME}_${INTERFACE}_Evidence"
+    EVIDENCE_DIR="reports/${TEST_NAME}_${INTERFACE}_Evidence"
     mkdir -p "$EVIDENCE_DIR"
     OUTPUT_PREFIX="${EVIDENCE_DIR}/${TEST_NAME}_${INTERFACE}"
     OUTPUT_XML="${OUTPUT_PREFIX}.xml"
@@ -414,8 +431,12 @@ for target in targets:
                         for h in n_root.findall("host"):
                             p_elem = h.find("ports")
                             if p_elem is None: continue
+
+                            scanned_ports = set(failed_hosts[ip])
+
                             for p in p_elem.findall("port"):
                                 pid = p.get("portid")
+                                scanned_ports.discard(pid)
                                 proto = p.get("protocol")
                                 state_elem = p.find("state")
                                 st = state_elem.get("state")
@@ -432,6 +453,14 @@ for target in targets:
                                         seg_status = "Segmentation Passed"
 
                                     f_out.write(f"{source_ip},{ip},{seg_status},{pid},{proto},{st},{reas},{sv}\n")
+
+                            for ep in p_elem.findall("extraports"):
+                                ep_state = ep.get("state")
+                                er = ep.find("extrareasons")
+                                ep_reason = er.get("reason") if er is not None else "unknown"
+                                for pid in scanned_ports:
+                                    with open(final_csv, "a") as f_out:
+                                        f_out.write(f"{source_ip},{ip},Segmentation Passed,{pid},tcp,{ep_state},{ep_reason},unknown\n")
                     except:
                         pass
                     if os.path.exists(nmap_xml):
