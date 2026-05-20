@@ -31,6 +31,7 @@ Septum utilizes a highly optimized Two-Stage methodology:
 - **Massive Scope Support**: Designed to scan tens of thousands of IPs without crashing.
 - **Interactive Pause/Resume**: Masscan can be paused via `Ctrl+C` and easily resumed via the interactive menu.
 - **CSV Output**: Consolidates results into a QSA-friendly `_PCI_Report.csv` clearly marking "Segmentation Passed" or "Segmentation Failed."
+- **Known False-Positive Filtering**: Automatically flags known firewall tarpits (e.g., tcpwrapped ports like 5060 or 2000) as "Verify Manual (Known FP)" to ensure clean, accurate evidence without omitting the data.
 
 ## Installation
 
@@ -113,6 +114,8 @@ Starting Stage 1: Masscan...
 
 ### Output Files
 
-Upon completion, Septum generates two critical pieces of evidence:
-1.  **`PCI_VLAN_200_TEST_eth0.200_PCI_Report.csv`**: The parsed, human-readable report.
-2.  **`PCI_VLAN_200_TEST_eth0.200_Evidence.pcap`**: The raw packet capture proving the packets left the interface.
+Upon completion, Septum creates an isolated evidence folder (e.g., `PCI_VLAN_200_TEST_eth0.200_Evidence/`) containing all critical pieces of evidence:
+1.  **`..._PCI_Report.csv`**: The parsed, human-readable PCI DSS report showing segmentation passes and failures.
+2.  **`..._Evidence.pcap`**: The raw packet capture proving packets left the interface but were dropped by the firewall.
+3.  **`..._nmap_<IP>.xml`**: The raw Nmap output files for any verified false positives or failures.
+4.  **`...xml`**: The raw Masscan sweep evidence file.
