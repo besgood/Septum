@@ -50,6 +50,7 @@ sudo apt-get install -y masscan nmap python3 tcpdump
 git clone https://github.com/yourusername/Septum.git
 cd Septum
 mkdir targets
+mkdir reports
 chmod +x septum.sh
 ```
 
@@ -114,7 +115,7 @@ Starting Stage 1: Masscan...
 
 ### Output Files
 
-Upon completion, Septum creates an isolated evidence folder (e.g., `PCI_VLAN_200_TEST_eth0.200_Evidence/`) containing all critical pieces of evidence:
+Upon completion, Septum creates an isolated evidence folder natively within your reports directory (e.g., `reports/PCI_VLAN_200_TEST_eth0.200_Evidence/`) containing all critical pieces of evidence:
 1.  **`..._PCI_Report.csv`**: The parsed, human-readable PCI DSS report showing segmentation passes and failures.
 2.  **`..._Evidence.pcap`**: The raw packet capture proving packets left the interface but were dropped by the firewall.
 3.  **`..._nmap_<IP>.xml`**: The raw Nmap output files for any verified false positives or failures.
