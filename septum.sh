@@ -20,9 +20,58 @@ echo ""
 echo "Select Mode:"
 echo "1) Start a New Scan"
 echo "2) Resume an Interrupted Masscan"
-read -p "Choice [1/2]: " MODE
+echo "3) Generate Report from Existing Masscan XML"
+read -p "Choice [1/2/3]: " MODE
 
-if [ "$MODE" == "2" ]; then
+if [ "$MODE" == "3" ]; then
+    echo ""
+    read -p "Enter the path to the existing Masscan XML file: " OUTPUT_XML
+    if [ ! -f "$OUTPUT_XML" ]; then echo "[-] Error: File not found."; exit 1; fi
+    OUTPUT_PREFIX="${OUTPUT_XML%.xml}"
+
+    echo ""
+    echo "Available Target Lists:"
+    if [ -d "targets" ]; then TARGET_FILES=(targets/*.txt); else TARGET_FILES=(*.txt); fi
+    if [ ! -e "${TARGET_FILES[0]}" ]; then
+        read -p "No .txt files found. Enter the path to the target IP list file manually: " IP_LIST
+    else
+        for i in "${!TARGET_FILES[@]}"; do echo "$((i+1))) ${TARGET_FILES[$i]}"; done
+        echo "$(( ${#TARGET_FILES[@]} + 1 ))) Enter a path manually"
+        read -p "Select a target list [1-$(( ${#TARGET_FILES[@]} + 1 ))]: " TARGET_CHOICE
+        if ! [[ "$TARGET_CHOICE" =~ ^[0-9]+$ ]] || [ "$TARGET_CHOICE" -lt 1 ] || [ "$TARGET_CHOICE" -gt $(( ${#TARGET_FILES[@]} + 1 )) ]; then
+            echo "[-] Error: Invalid selection."; exit 1
+        fi
+        if [ "$TARGET_CHOICE" -eq $(( ${#TARGET_FILES[@]} + 1 )) ]; then
+            read -p "Enter the path to the target IP list file: " IP_LIST
+        else
+            IP_LIST="${TARGET_FILES[$((TARGET_CHOICE-1))]}"
+        fi
+    fi
+    if [ ! -f "$IP_LIST" ]; then echo "[-] Error: File $IP_LIST not found!"; exit 1; fi
+
+    echo ""
+    read -p "Enter the Source IP to record in the report: " SOURCE_IP
+    if [ -z "$SOURCE_IP" ]; then echo "[-] Error: Source IP required."; exit 1; fi
+
+    echo ""
+    echo "Available Network Interfaces (for Nmap validation):"
+    IFACES=($(ip -br link show | awk '{print $1}' | cut -d@ -f1))
+    for i in "${!IFACES[@]}"; do
+        state=$(ip -br link show dev "${IFACES[$i]}" | awk '{print $2}')
+        echo "$((i+1))) ${IFACES[$i]} ($state)"
+    done
+    read -p "Select the interface for Nmap to use [1-${#IFACES[@]}]: " IFACE_CHOICE
+    if ! [[ "$IFACE_CHOICE" =~ ^[0-9]+$ ]] || [ "$IFACE_CHOICE" -lt 1 ] || [ "$IFACE_CHOICE" -gt "${#IFACES[@]}" ]; then
+        echo "[-] Error: Invalid interface selection."; exit 1
+    fi
+    INTERFACE="${IFACES[$((IFACE_CHOICE-1))]}"
+
+    echo ""
+    read -p "Enter known false-positive ports to flag in report (e.g. 2000,5060) [Leave blank for none]: " FP_PORTS
+    FP_PORTS=$(echo "$FP_PORTS" | tr -d ' ')
+
+    STAGE2=1
+elif [ "$MODE" == "2" ]; then
     echo ""
     echo "Available Resume Files:"
     RESUME_FILES=(paused.conf*)
@@ -103,6 +152,10 @@ if [ "$MODE" == "2" ]; then
     fi
 
     # PCAP Capture logic for Resume
+    echo ""
+    read -p "Enter known false-positive ports to flag in report (e.g. 2000,5060) [Leave blank for none]: " FP_PORTS
+    FP_PORTS=$(echo "$FP_PORTS" | tr -d ' ')
+
     echo ""
     read -p "Enable PCAP capture for this resumed session? (y/n) [y]: " ENABLE_PCAP
     ENABLE_PCAP=${ENABLE_PCAP:-y}
@@ -208,8 +261,14 @@ elif [ "$MODE" == "1" ]; then
     case $SCOPE_CHOICE in
         1) PORT_ARGS="--top-ports 100" ;;
         2) PORT_ARGS="--top-ports 1000" ;;
-        3) PORT_ARGS="--top-ports 5000" ;;
-        4) PORT_ARGS="--top-ports 10000" ;;
+        3)
+           TOP_PORTS=$(sort -r -k3 /usr/share/nmap/nmap-services | grep '/tcp' | head -n 5000 | awk '{print $2}' | cut -d/ -f1 | paste -sd,)
+           PORT_ARGS="-p $TOP_PORTS"
+           ;;
+        4)
+           TOP_PORTS=$(sort -r -k3 /usr/share/nmap/nmap-services | grep '/tcp' | head -n 10000 | awk '{print $2}' | cut -d/ -f1 | paste -sd,)
+           PORT_ARGS="-p $TOP_PORTS"
+           ;;
         6) read -p "Enter ports (e.g. 80,443,1-1000): " CUSTOM_PORTS
            CUSTOM_PORTS=$(echo "$CUSTOM_PORTS" | tr -d ' ')
            if [ -z "$CUSTOM_PORTS" ]; then echo "[-] Error: Ports required."; exit 1; fi
@@ -221,8 +280,14 @@ elif [ "$MODE" == "1" ]; then
     read -p "Set max packet rate (pps) [Default: 2000]: " RATE
     RATE=${RATE:-2000}
 
-    OUTPUT_PREFIX="${TEST_NAME}_${INTERFACE}"
+    EVIDENCE_DIR="${TEST_NAME}_${INTERFACE}_Evidence"
+    mkdir -p "$EVIDENCE_DIR"
+    OUTPUT_PREFIX="${EVIDENCE_DIR}/${TEST_NAME}_${INTERFACE}"
     OUTPUT_XML="${OUTPUT_PREFIX}.xml"
+
+    echo ""
+    read -p "Enter known false-positive ports to flag in report (e.g. 2000,5060) [Leave blank for none]: " FP_PORTS
+    FP_PORTS=$(echo "$FP_PORTS" | tr -d ' ')
 
     echo ""
     read -p "Enable PCAP capture for QSA evidence? (y/n) [y]: " ENABLE_PCAP
@@ -281,6 +346,8 @@ source_ip = sys.argv[3]
 final_csv = sys.argv[4]
 tmp_dir = sys.argv[5]
 interface = sys.argv[6]
+fp_ports_arg = sys.argv[7] if len(sys.argv) > 7 else ""
+fp_ports = fp_ports_arg.split(',') if fp_ports_arg else []
 
 # 1. Parse Masscan for failures
 failed_hosts = {} # ip -> [ports]
@@ -299,14 +366,16 @@ if os.path.exists(masscan_xml) and os.path.getsize(masscan_xml) > 0:
                             if state_elem is not None and state_elem.get("state") == "open":
                                 ports.append(p.get("portid"))
                     if ports:
-                        failed_hosts[addr] = ports
+                        if addr not in failed_hosts:
+                            failed_hosts[addr] = set()
+                        failed_hosts[addr].update(ports)
                 elem.clear() # Free memory
     except:
         pass
 
 # 2. Iterate through Target List
 with open(ip_list_file, "r") as f:
-    targets = [line.strip() for line in f if line.strip()]
+    targets = [line.strip() for line in f if line.strip() and not line.strip().startswith('#')]
 
 for target in targets:
     try:
@@ -336,7 +405,7 @@ for target in targets:
                 print(f"[*] Validating failure on {ip}...")
 
                 nmap_xml = f"{tmp_dir}/nmap_{ip}.xml"
-                subprocess.run(["sudo", "nmap", "-Pn", "-sS", "-sV", "-e", interface, "-S", source_ip, "-p", port_list, ip, "-oX", nmap_xml], capture_output=True)
+                subprocess.run(["sudo", "nmap", "-Pn", "-sS", "-sV", "-T4", "--max-retries", "2", "--host-timeout", "10m", "-e", interface, "-S", source_ip, "-p", port_list, ip, "-oX", nmap_xml], capture_output=True)
 
                 if os.path.exists(nmap_xml):
                     try:
@@ -354,10 +423,21 @@ for target in targets:
                                 s_elem = p.find("service")
                                 sv = s_elem.get("name") if s_elem is not None else "unknown"
                                 with open(final_csv, "a") as f_out:
-                                    f_out.write(f"{source_ip},{ip},Segmentation Failed,{pid},{proto},{st},{reas},{sv}\n")
+                                    # Handle Known False Positives
+                                    if pid in fp_ports and st == "open" and (sv == "tcpwrapped" or sv == "unknown"):
+                                        seg_status = "Verify Manual (Known FP)"
+                                    elif st == "open":
+                                        seg_status = "Segmentation Failed"
+                                    else:
+                                        seg_status = "Segmentation Passed"
+
+                                    f_out.write(f"{source_ip},{ip},{seg_status},{pid},{proto},{st},{reas},{sv}\n")
                     except:
                         pass
-                    if os.path.exists(nmap_xml): os.remove(nmap_xml)
+                    if os.path.exists(nmap_xml):
+                        import shutil
+                        output_prefix = final_csv.replace('_PCI_Report.csv', '')
+                        shutil.move(nmap_xml, f"{output_prefix}_nmap_{ip}.xml")
 
             # Also record the original range as "Failed" for context
             if "/" in target:
@@ -369,7 +449,7 @@ for target in targets:
 
 EOF_PY
 
-    python3 "$SECURE_TMP/septum_orchestrator.py" "$OUTPUT_XML" "$IP_LIST" "$SOURCE_IP" "$FINAL_CSV" "$SECURE_TMP" "$INTERFACE"
+    python3 "$SECURE_TMP/septum_orchestrator.py" "$OUTPUT_XML" "$IP_LIST" "$SOURCE_IP" "$FINAL_CSV" "$SECURE_TMP" "$INTERFACE" "$FP_PORTS"
     rm -rf "$SECURE_TMP"
 
     if [[ "$ENABLE_PCAP" =~ ^[Yy]$ ]] && [ -n "$TCPDUMP_PID" ]; then
