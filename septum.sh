@@ -277,31 +277,61 @@ elif [ "$MODE" == "1" ]; then
 
     echo ""
     echo "Select Port Scan Scope:"
-    echo "1) Top 100 Ports"
-    echo "2) Top 1,000 Ports"
-    echo "3) Top 5,000 Ports"
-    echo "4) Top 10,000 Ports"
-    echo "5) All Ports (1-65535)"
+    echo "1) Top 100 Ports (Includes UDP Top 20)"
+    echo "2) Top 1,000 Ports (Includes UDP Top 20)"
+    echo "3) Top 5,000 Ports (Includes UDP Top 20)"
+    echo "4) Top 10,000 Ports (Includes UDP Top 20)"
+    echo "5) All Ports (1-65535) (Includes UDP Top 20)"
     echo "6) Manually Enter Ports"
-    echo "7) UDP Top 25 Ports"
+    echo "7) UDP Top 20 Ports Only"
     read -p "Choice [1-7]: " SCOPE_CHOICE
+    
+    UDP_TOP20="U:53,U:67,U:68,U:69,U:88,U:123,U:137,U:138,U:161,U:162,U:389,U:500,U:514,U:1194,U:1434,U:1900,U:2049,U:3389,U:4500,U:5060"
     case $SCOPE_CHOICE in
-        1) PORT_ARGS="--top-ports 100" ;;
-        2) PORT_ARGS="--top-ports 1000" ;;
+        1) 
+           if [ -f /usr/share/nmap/nmap-services ]; then
+               TOP_PORTS=$(sort -r -k3 /usr/share/nmap/nmap-services | grep '/tcp' | head -n 100 | awk '{print $2}' | cut -d/ -f1 | paste -sd,)
+               PORT_ARGS="-p T:$TOP_PORTS,$UDP_TOP20"
+           else
+               PORT_ARGS="-p T:20-25,80,110,135,139,443,445,1433,3306,3389,8080,$UDP_TOP20"
+           fi
+           ;;
+        2) 
+           if [ -f /usr/share/nmap/nmap-services ]; then
+               TOP_PORTS=$(sort -r -k3 /usr/share/nmap/nmap-services | grep '/tcp' | head -n 1000 | awk '{print $2}' | cut -d/ -f1 | paste -sd,)
+               PORT_ARGS="-p T:$TOP_PORTS,$UDP_TOP20"
+           else
+               PORT_ARGS="-p T:1-1024,$UDP_TOP20"
+           fi
+           ;;
         3) 
-           TOP_PORTS=$(sort -r -k3 /usr/share/nmap/nmap-services | grep '/tcp' | head -n 5000 | awk '{print $2}' | cut -d/ -f1 | paste -sd,)
-           PORT_ARGS="-p $TOP_PORTS" 
+           if [ -f /usr/share/nmap/nmap-services ]; then
+               TOP_PORTS=$(sort -r -k3 /usr/share/nmap/nmap-services | grep '/tcp' | head -n 5000 | awk '{print $2}' | cut -d/ -f1 | paste -sd,)
+               PORT_ARGS="-p T:$TOP_PORTS,$UDP_TOP20"
+           else
+               PORT_ARGS="-p T:1-5000,$UDP_TOP20"
+           fi
            ;;
         4) 
-           TOP_PORTS=$(sort -r -k3 /usr/share/nmap/nmap-services | grep '/tcp' | head -n 10000 | awk '{print $2}' | cut -d/ -f1 | paste -sd,)
-           PORT_ARGS="-p $TOP_PORTS" 
+           if [ -f /usr/share/nmap/nmap-services ]; then
+               TOP_PORTS=$(sort -r -k3 /usr/share/nmap/nmap-services | grep '/tcp' | head -n 10000 | awk '{print $2}' | cut -d/ -f1 | paste -sd,)
+               PORT_ARGS="-p T:$TOP_PORTS,$UDP_TOP20"
+           else
+               PORT_ARGS="-p T:1-10000,$UDP_TOP20"
+           fi
            ;;
         6) read -p "Enter ports (e.g. 80,443,1-1000): " CUSTOM_PORTS
            CUSTOM_PORTS=$(echo "$CUSTOM_PORTS" | tr -d ' ')
            if [ -z "$CUSTOM_PORTS" ]; then echo "[-] Error: Ports required."; exit 1; fi
-           PORT_ARGS="-p $CUSTOM_PORTS" ;;
-        7) PORT_ARGS="-p U:53,U:67,U:68,U:69,U:88,U:123,U:137,U:138,U:161,U:162,U:389,U:500,U:514,U:1194,U:1434,U:1812,U:1813,U:1900,U:2049,U:3389,U:4500,U:5060,U:5061,U:5353,U:5355" ;;
-        *) PORT_ARGS="-p 1-65535" ;;
+           echo "[*] Appending Top 20 UDP ports to manual scan to guarantee dual-protocol QSA compliance..."
+           if [[ "$CUSTOM_PORTS" =~ ^[0-9,-]+$ ]]; then
+               PORT_ARGS="-p T:$CUSTOM_PORTS,$UDP_TOP20"
+           else
+               PORT_ARGS="-p $CUSTOM_PORTS,$UDP_TOP20"
+           fi
+           ;;
+        7) PORT_ARGS="-p $UDP_TOP20" ;;
+        *) PORT_ARGS="-p T:1-65535,$UDP_TOP20" ;;
     esac
 
     echo ""
@@ -476,6 +506,21 @@ elif [ "$MODE" == "1" ]; then
     if [[ ! "$CONFIRM_SCOPE" =~ ^[Yy]$ ]]; then
         echo "[-] Scan cancelled by operator."
         exit 1
+    fi
+
+    echo ""
+    echo "======================================"
+    echo "    Starting Stage 1 Discovery Scan   "
+    echo "======================================"
+    echo "[*] Scanning targets for TCP and UDP ports using Masscan..."
+    VLAN_ID=$(echo "$INTERFACE" | cut -s -d. -f2)
+
+    if [ -n "$VLAN_ID" ]; then
+        PHYS_INTERFACE=$(echo "$INTERFACE" | cut -d. -f1)
+        echo "[*] Detected VLAN sub-interface. Switching to native tagging on $PHYS_INTERFACE (VLAN $VLAN_ID)"
+        sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$PHYS_INTERFACE" --vlan "$VLAN_ID" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
+    else
+        sudo masscan -iL "$IP_LIST" $PORT_ARGS -e "$INTERFACE" --source-ip "$SOURCE_IP" $MAC_ARGS --rate "$RATE" -oX "$OUTPUT_XML"
     fi
 
     STAGE2=1
